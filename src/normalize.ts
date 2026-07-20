@@ -18,8 +18,18 @@ import { createHash } from "node:crypto";
 // Volatile field matcher
 // ---------------------------------------------------------------------------
 
+/**
+ * Volatile field matcher — strips telemetry / tracing fields that vary
+ * between logically-identical tool calls.
+ *
+ * Covers both camelCase (requestId) and snake_case (request_id) forms.
+ * The /i flag handles case variation.
+ *
+ * Deliberately does NOT include `file_path`, `user_id`, `mime_type`, or
+ * other semantically meaningful snake_case fields.
+ */
 const VOLATILE_RE =
-  /^(timestamp|ts|uuid|uuidv4|nonce|randomId|sessionID|sessionId|callID|callId|createdAt|updatedAt|receivedAt)$/i;
+  /^(timestamp|ts|uuid|uuidv4|nonce|randomId|sessionID|sessionId|callID|callId|createdAt|created_at|updatedAt|updated_at|receivedAt|received_at|deletedAt|deleted_at|request_id|requestId|x_request_id|xRequestId|trace_id|traceId|span_id|spanId|correlation_id|correlationId)$/i;
 
 // ---------------------------------------------------------------------------
 // Normalization

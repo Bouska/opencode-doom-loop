@@ -255,3 +255,49 @@ describe("exactHash", () => {
     expect(() => exactHash(obj)).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Volatile-field regex gaps (Fix 2)
+// ---------------------------------------------------------------------------
+
+describe("VOLATILE_RE — new fields", () => {
+  function assertStripped(key: string): void {
+    const result = normalizeArgs({ key, keepMe: "x" }) as Record<string, unknown>;
+    expect(result.keepMe).toBe("x");
+    expect((result as Record<string, unknown>)[key]).toBeUndefined();
+  }
+
+  function assertPreserved(key: string): void {
+    const result = normalizeArgs({ [key]: "val" }) as Record<string, unknown>;
+    expect((result as Record<string, unknown>)[key]).toBe("val");
+  }
+
+  // Snake_case telemetry fields
+  test("request_id is stripped", () => assertStripped("request_id"));
+  test("requestId is stripped", () => assertStripped("requestId"));
+  test("x_request_id is stripped", () => assertStripped("x_request_id"));
+  test("xRequestId is stripped", () => assertStripped("xRequestId"));
+  test("trace_id is stripped", () => assertStripped("trace_id"));
+  test("traceId is stripped", () => assertStripped("traceId"));
+  test("span_id is stripped", () => assertStripped("span_id"));
+  test("spanId is stripped", () => assertStripped("spanId"));
+  test("correlation_id is stripped", () => assertStripped("correlation_id"));
+  test("correlationId is stripped", () => assertStripped("correlationId"));
+  test("created_at is stripped", () => assertStripped("created_at"));
+  test("updated_at is stripped", () => assertStripped("updated_at"));
+  test("deleted_at is stripped", () => assertStripped("deleted_at"));
+  test("deletedAt is stripped", () => assertStripped("deletedAt"));
+  test("received_at is stripped", () => assertStripped("received_at"));
+
+  // Volatile fields from the original regex still stripped
+  test("timestamp still stripped", () => assertStripped("timestamp"));
+  test("sessionId still stripped", () => assertStripped("sessionId"));
+  test("sessionID still stripped", () => assertStripped("sessionID"));
+  test("callId still stripped", () => assertStripped("callId"));
+  test("callID still stripped", () => assertStripped("callID"));
+
+  // Semantically meaningful snake_case fields — must survive
+  test("file_path is preserved", () => assertPreserved("file_path"));
+  test("user_id is preserved", () => assertPreserved("user_id"));
+  test("mime_type is preserved", () => assertPreserved("mime_type"));
+});

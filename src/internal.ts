@@ -33,6 +33,8 @@ export interface DoomLoopConfig {
   fuzzyHamming: number;
   /** Per-session ring buffer size cap. */
   maxBuffer: number;
+  /** Global session map cap (default 100). */
+  maxSessions: number;
   /** Comma-separated tool names to NEVER check (default: "list,todowrite"). */
   excludeTools: string[];
   /** If non-empty, ONLY these tools are checked (default: "" = all). */
@@ -142,6 +144,7 @@ function clampThresholds(
  *   DOOM_LOOP_FUZZY_THRESHOLD  — fuzzy-match count (default 3)
  *   DOOM_LOOP_WINDOW_MS        — time window in ms (default 60000)
  *   DOOM_LOOP_FUZZY_HAMMING    — max Hamming distance (default 8, max 16)
+ *   DOOM_LOOP_MAX_SESSIONS     — global session map cap (default 100)
  *   DOOM_LOOP_MAX_BUFFER       — per-session buffer cap (default 50)
  *   DOOM_LOOP_EXCLUDE_TOOLS    — never-checked tools (default "list,todowrite")
  *   DOOM_LOOP_INCLUDE_TOOLS    — only-checked tools (default "" = all)
@@ -168,6 +171,7 @@ export function loadConfig(env: EnvMap = process.env): DoomLoopConfig {
     windowMs: envInt(env, "DOOM_LOOP_WINDOW_MS", 60000),
     fuzzyHamming: Math.min(envInt(env, "DOOM_LOOP_FUZZY_HAMMING", 8), 16),
     maxBuffer,
+    maxSessions: envInt(env, "DOOM_LOOP_MAX_SESSIONS", 100),
     excludeTools: envList(env, "DOOM_LOOP_EXCLUDE_TOOLS", ["list", "todowrite"]),
     includeTools: envList(env, "DOOM_LOOP_INCLUDE_TOOLS", []),
     debug,
@@ -289,12 +293,14 @@ export function createPlugin(
       const args = output?.args;
       if (args === undefined) return;
 
-      // Compute hashes (isolated: bad args must never crash the hook)
+      // Compute hashes and args preview (isolated: bad args must never crash the hook)
       let exact: string;
       let fuzzy: bigint;
+      let preview: string;
       try {
         exact = exactHash(args);
         fuzzy = computeFuzzyHash(args);
+        preview = canonicalJSON(args).slice(0, 200);
       } catch (err) {
         if (config.debug) {
           logger("warn", `[opencode-doom-loop] Hashing failed for ${tool}: ${err}`);
@@ -304,15 +310,14 @@ export function createPlugin(
 
       const ts = Date.now();
 
-      // Record this call
-      detector.record(sessionID, { tool, exactHash: exact, fuzzyHash: fuzzy, ts });
+      // Record this call (argsPreview is stored per-call for accurate diagnostics)
+      detector.record(sessionID, { tool, exactHash: exact, fuzzyHash: fuzzy, ts, argsPreview: preview });
 
       // Check for trip
       const event = detector.check(sessionID, tool, exact, fuzzy);
       if (event) {
-        // Fill in argsPreview
-        const preview = canonicalJSON(args).slice(0, 200);
-        event.lastCalls = event.lastCalls.map((c) => ({ ...c, argsPreview: preview }));
+        // Note: argsPreview is NOT overwritten here — each CallRecord stores
+        // its own preview, and buildTripEvent surfaces them as-is.
 
         // Log
         logger("warn", `[opencode-doom-loop] Trip: ${tool} ${event.mode} count=${event.count} session=${sessionID}`);

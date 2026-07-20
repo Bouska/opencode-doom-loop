@@ -23,12 +23,14 @@ const baseConfig: DetectorConfig = {
   windowMs: 60000,
   fuzzyHamming: 8,
   maxBuffer: 50,
+  maxSessions: 100,
 };
 
-function makeRecord(tool: string, args: unknown): { exactHash: string; fuzzyHash: bigint } {
+function makeRecord(tool: string, args: unknown): { exactHash: string; fuzzyHash: bigint; argsPreview: string } {
   return {
     exactHash: exactHash(args),
     fuzzyHash: computeFuzzyHash(args),
+    argsPreview: canonicalJSON(args).slice(0, 200),
   };
 }
 
@@ -520,6 +522,7 @@ describe("createPlugin hashing isolation", () => {
       windowMs: cfg.windowMs,
       fuzzyHamming: cfg.fuzzyHamming,
       maxBuffer: cfg.maxBuffer,
+      maxSessions: cfg.maxSessions,
     });
     const logs: string[] = [];
     const plugin = createPlugin(cfg, d, (level, msg) => { logs.push(`${level}:${msg}`); });
@@ -542,6 +545,7 @@ describe("createPlugin hashing isolation", () => {
       windowMs: cfg.windowMs,
       fuzzyHamming: cfg.fuzzyHamming,
       maxBuffer: cfg.maxBuffer,
+      maxSessions: cfg.maxSessions,
     });
     const logs: string[] = [];
     const plugin = createPlugin(cfg, d, (level, msg) => { logs.push(`${level}:${msg}`); });
@@ -595,6 +599,133 @@ describe("loadConfig clamping", () => {
     expect(cfg.threshold).toBe(3);
     expect(cfg.fuzzyThreshold).toBe(5);
     expect(cfg.maxBuffer).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global LRU session eviction (Fix 3)
+// ---------------------------------------------------------------------------
+
+describe("DoomLoopDetector (LRU session eviction)", () => {
+  test("with maxSessions=3, recording a 4th session evicts the LRU", () => {
+    let fakeNow = 10000;
+    const d = new DoomLoopDetector(
+      { ...baseConfig, maxSessions: 3, windowMs: 100000 },
+      { now: () => fakeNow },
+    );
+    const r = makeRecord("read", { filePath: "/a.txt" });
+
+    // Record 3 sessions at increasing timestamps
+    d.record("ses_1", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    d.record("ses_2", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    d.record("ses_3", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.sessionCount()).toBe(3);
+
+    // ses_4 should evict ses_1 (oldest lastAccess at 10000)
+    d.record("ses_4", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.sessionCount()).toBe(3);
+    expect(d.check("ses_1", "read", r.exactHash, r.fuzzyHash)).toBeNull();
+    // ses_4 has 1 record, record 2 more and confirm it trips
+    d.record("ses_4", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    d.record("ses_4", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.check("ses_4", "read", r.exactHash, r.fuzzyHash)).not.toBeNull();
+  });
+
+  test("touching a session via check() updates its LRU position", () => {
+    let fakeNow = 10000;
+    const d = new DoomLoopDetector(
+      { ...baseConfig, maxSessions: 2, windowMs: 100000 },
+      { now: () => fakeNow },
+    );
+    const r = makeRecord("read", { filePath: "/a.txt" });
+
+    d.record("ses_1", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    d.record("ses_2", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.sessionCount()).toBe(2);
+
+    // Touch ses_1 via check — sets its lastAccess to current fakeNow
+    d.check("ses_1", "read", r.exactHash, r.fuzzyHash); fakeNow += 1000;
+
+    // Adding ses_3 should evict ses_2 (lastAccess 12000) not ses_1 (lastAccess 13000)
+    d.record("ses_3", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.sessionCount()).toBe(2);
+
+    // Confirm ses_1 still exists and ses_2 is gone by adding records to trip
+    // ses_1 should have 2 records now (one from original record, one from check's touch didn't add a record)
+    // Actually, check doesn't record, so ses_1 has only 1 record. Record 2 more.
+    d.record("ses_1", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    d.record("ses_1", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.check("ses_1", "read", r.exactHash, r.fuzzyHash)).not.toBeNull();
+
+    // ses_2 is gone — recording fresh to ses_2 should start clean (no trip with 1 record)
+    d.record("ses_2", { tool: "read", ...r, ts: fakeNow }); fakeNow += 1000;
+    expect(d.check("ses_2", "read", r.exactHash, r.fuzzyHash)).toBeNull();
+  });
+
+  test("evicted session starts fresh on next record", () => {
+    let fakeNow = 10000;
+    const d = new DoomLoopDetector(
+      { ...baseConfig, maxSessions: 1, windowMs: 100000 },
+      { now: () => fakeNow },
+    );
+    const rA = makeRecord("read", { filePath: "/a.txt" });
+    const rB = makeRecord("read", { filePath: "/b.txt" });
+
+    d.record("ses_1", { tool: "read", ...rA, ts: fakeNow }); fakeNow += 1000;
+    // ses_2 evicts ses_1
+    d.record("ses_2", { tool: "read", ...rB, ts: fakeNow }); fakeNow += 1000;
+    expect(d.sessionCount()).toBe(1);
+
+    // Re-record ses_1 — should have a clean buffer
+    d.record("ses_1", { tool: "read", ...rA, ts: fakeNow }); fakeNow += 1000;
+    expect(d.sessionCount()).toBe(1);
+    // Only 1 recent record in ses_1, so no trip
+    expect(d.check("ses_1", "read", rA.exactHash, rA.fuzzyHash)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-call argsPreview (Fix 4)
+// ---------------------------------------------------------------------------
+
+describe("DoomLoopDetector (per-call argsPreview)", () => {
+  test("fuzzy trip shows different previews for each call", () => {
+    const shared = { a: "a", b: "b", c: "c", d: "d", e: "e", f: "f", g: "g", h: "h", i: "i", j: "j", k: "k", l: "l", m: "m", n: "n" };
+    const r1 = makeRecord("read", shared);
+    const r2 = makeRecord("read", { ...shared, n: "O" });
+    const r3 = makeRecord("read", { ...shared, n: "p" });
+    const dist12 = hammingDistance(r1.fuzzyHash, r2.fuzzyHash);
+    const dist23 = hammingDistance(r2.fuzzyHash, r3.fuzzyHash);
+    const maxDist = Math.max(dist12, dist23);
+    const d = new DoomLoopDetector({ ...baseConfig, fuzzyThreshold: 3, fuzzyHamming: Math.max(maxDist, 3), maxSessions: 100 });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...r1, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...r2, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...r3, ts: now });
+    const trip = d.check("ses_1", "read", r3.exactHash, r3.fuzzyHash);
+    expect(trip).not.toBeNull();
+    expect(trip!.lastCalls).toHaveLength(3);
+    // Each entry should have a different argsPreview (different 'n' value)
+    expect(trip!.lastCalls[0].argsPreview).not.toBe(trip!.lastCalls[1].argsPreview);
+    expect(trip!.lastCalls[1].argsPreview).not.toBe(trip!.lastCalls[2].argsPreview);
+  });
+
+  test("exact trip stores per-call previews", () => {
+    const d = new DoomLoopDetector(baseConfig);
+    const r = makeRecord("read", { filePath: "/a.txt" });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...r, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...r, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...r, ts: now });
+    const trip = d.check("ses_1", "read", r.exactHash, r.fuzzyHash);
+    expect(trip).not.toBeNull();
+    expect(trip!.lastCalls).toHaveLength(3);
+    // All three have the same preview (same canonical args), but the important
+    // thing is they carry their own stored previews (not blank/overwritten)
+    for (const c of trip!.lastCalls) {
+      expect(c.argsPreview).toBeTruthy();
+      expect(c.argsPreview).toContain("/a.txt");
+    }
   });
 });
 

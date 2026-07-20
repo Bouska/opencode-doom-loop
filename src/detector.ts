@@ -27,6 +27,9 @@ export interface CallRecord {
   exactHash: string;
   fuzzyHash: bigint;
   ts: number;
+  /** String preview of the canonical args (first 200 chars). Stored per-call
+   *  so trip diagnostics show what each individual call actually contained. */
+  argsPreview: string;
 }
 
 export interface DetectorConfig {
@@ -40,6 +43,9 @@ export interface DetectorConfig {
   fuzzyHamming: number;
   /** Per-session ring buffer size cap (default 50). */
   maxBuffer: number;
+  /** Global session map cap (default 100). When exceeded, the least-recently-
+   *  used session is evicted. */
+  maxSessions: number;
 }
 
 export interface TripEvent {
@@ -168,6 +174,8 @@ export function hammingDistance(a: bigint, b: bigint): number {
 
 export class DoomLoopDetector {
   private buffers = new Map<string, CallRecord[]>();
+  /** Tracks the last-access timestamp per session for LRU eviction. */
+  private lastAccess = new Map<string, number>();
 
   constructor(
     private config: DetectorConfig,
@@ -177,9 +185,15 @@ export class DoomLoopDetector {
   /**
    * Append a call record to the session's buffer, evicting entries outside
    * the time window and trimming to maxBuffer.
+   *
+   * Also performs global LRU eviction when the session map exceeds
+   * `maxSessions`: the least-recently-used session (by last record or check)
+   * is dropped.
    */
   record(sessionID: string, record: CallRecord): void {
     const now = this.deps.now?.() ?? Date.now();
+    this.touchSession(sessionID, now);
+
     let buf = this.buffers.get(sessionID);
 
     if (!buf) {
@@ -229,7 +243,8 @@ export class DoomLoopDetector {
    *
    * `lastCalls` on the TripEvent contains only the records that contributed
    * to the winning streak mode (exact matches for exact trips, all fuzzy-
-   * matching records for fuzzy trips).
+   * matching records for fuzzy trips). Each entry carries its own stored
+   * argsPreview.
    */
   check(
     sessionID: string,
@@ -241,6 +256,7 @@ export class DoomLoopDetector {
     if (!buf || buf.length === 0) return null;
 
     const now = this.deps.now?.() ?? Date.now();
+    this.touchSession(sessionID, now);
     const cutoff = now - this.config.windowMs;
 
     let exactStreak = 0;
@@ -299,6 +315,7 @@ export class DoomLoopDetector {
    */
   reset(sessionID: string): void {
     this.buffers.delete(sessionID);
+    this.lastAccess.delete(sessionID);
   }
 
   /**
@@ -310,6 +327,42 @@ export class DoomLoopDetector {
       total += buf.length;
     }
     return total;
+  }
+
+  /** Number of sessions currently tracked. */
+  sessionCount(): number {
+    return this.buffers.size;
+  }
+
+  /**
+   * Mark a session as recently used. If the session is new and the map is
+   * at capacity, evict the least-recently-used session first.
+   */
+  private touchSession(sessionID: string, now: number): void {
+    const max = this.config.maxSessions;
+    // Evict LRU if at capacity and this is a new session
+    if (!this.buffers.has(sessionID) && max > 0 && this.buffers.size >= max) {
+      this.evictLRU();
+    }
+    this.lastAccess.set(sessionID, now);
+  }
+
+  /**
+   * Evict the session with the oldest lastAccess timestamp.
+   */
+  private evictLRU(): void {
+    let oldestID: string | null = null;
+    let oldestTime = Infinity;
+    for (const [id, time] of this.lastAccess) {
+      if (time < oldestTime) {
+        oldestTime = time;
+        oldestID = id;
+      }
+    }
+    if (oldestID) {
+      this.buffers.delete(oldestID);
+      this.lastAccess.delete(oldestID);
+    }
   }
 
   private buildTripEvent(
@@ -329,7 +382,7 @@ export class DoomLoopDetector {
       lastCalls: lastN.map((r) => ({
         tool: r.tool,
         ts: r.ts,
-        argsPreview: "", // Filled in by the caller with canonicalJSON(args).slice(0, 200)
+        argsPreview: r.argsPreview, // Stored per-call when recorded
       })),
     };
   }

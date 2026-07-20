@@ -60,6 +60,7 @@ export const DoomLoopGuard = async (context: {
     windowMs: config.windowMs,
     fuzzyHamming: config.fuzzyHamming,
     maxBuffer: config.maxBuffer,
+    maxSessions: config.maxSessions,
   };
 
   const detector = new DoomLoopDetector(detectorConfig);

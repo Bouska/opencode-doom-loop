@@ -14,9 +14,7 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
-    "dist/normalize.d.ts",
-    "dist/detector.d.ts"
+    "LICENSE"
   ],
   "scripts": {
     "build": "bun run clean && tsc --emitDeclarationOnly --outDir dist && mv dist/index.d.ts dist/opencode-doom-loop.d.ts && bun build src/index.ts --outdir=dist --entry-naming=opencode-doom-loop.js --target=node --format=esm --sourcemap=linked",

@@ -20,9 +20,9 @@ name: Release
 on:
   push:
     tags:
-      # Matches the default `npm version` tag format (v<semver>).
-      # Add a second line `  - 'v*.*.*-*'` if you also publish prereleases.
-      - 'v*.*.*'
+      # Strict SemVer glob: matches v1.2.3 but NOT v1.2.3-beta.1 or v1.2.3.4.
+      # Prerelease tags can be added with a second line `- 'v[0-9]+.[0-9]+.[0-9]+-*'`.
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 # Don't run stale or duplicate runs of this workflow for the same tag.
 concurrency:
@@ -43,17 +43,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
+        # v4 is the latest stable major as of 2025Q1. See:
+        #   https://github.com/actions/checkout/releases
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
+        # v4 is the latest stable major as of 2025Q1. See:
+        #   https://github.com/actions/setup-node/releases
         with:
           node-version: '24.x'
           registry-url: 'https://registry.npmjs.org'
-          # Disable the package-manager cache for release builds. We want
-          # npm to resolve a fresh dependency graph from the current lockfile
-          # on every publish, not serve a possibly-stale cache.
-          package-manager-cache: false
+          # No cache input — we want a fresh dependency graph for every
+          # publish, not a possibly-stale cache.
 
       - name: Setup Bun
         # The project uses `bun test` and `bun.lock`; install bun to match
@@ -79,6 +81,26 @@ jobs:
         # Compiles src/ -> dist/ (gitignored). npm publish will pick this up
         # via the `files: ["dist", "README.md", "LICENSE"]` field in package.json.
         run: bun run build
+
+      - name: Packed-tarball smoke test (declaration resolution)
+        # Extract the tarball and verify the TypeScript declaration graph
+        # resolves without errors. This catches missing .d.ts files or
+        # broken import paths before reaching npm.
+        run: |
+          TARBALL="$(npm pack)"
+          EXTRACT_DIR="$(mktemp -d)"
+          tar -xzf "$TARBALL" -C "$EXTRACT_DIR"
+          cd "$EXTRACT_DIR/package"
+          npx --yes typescript@"$(node -p "require('./package.json').devDependencies.typescript")" \
+            --noEmit --skipLibCheck \
+            dist/opencode-doom-loop.d.ts 2>&1
+          EC=$?
+          rm -rf "$EXTRACT_DIR" "$TARBALL"
+          if [ $EC -ne 0 ]; then
+            echo "::error::TypeScript declaration resolution failed in packed tarball"
+            exit 1
+          fi
+          echo "smoke-test: packed tarball declarations resolve cleanly"
 
       - name: Verify tag matches package.json version
         # Guard against the maintainer tagging manually and forgetting to bump
