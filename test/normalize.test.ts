@@ -236,4 +236,22 @@ describe("exactHash", () => {
     const b = exactHash({ filePath: "/foo.txt", timestamp: "xyz-789" });
     expect(a).toBe(b);
   });
+
+  test("BigInt values are coerced to string, exactHash does not throw", () => {
+    const hash = exactHash({ count: 42n });
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("normalizeArgs converts BigInt to string", () => {
+    const result = normalizeArgs({ value: 42n }) as Record<string, unknown>;
+    expect(result.value).toBe("42");
+  });
+
+  test("circular reference in args throws (JSON.stringify limitation)", () => {
+    const obj: Record<string, unknown> = { a: 1 };
+    obj.self = obj;
+    // normalizeArgs recurses into objects; a circular reference causes
+    // infinite recursion → the exact hash call will throw.
+    expect(() => exactHash(obj)).toThrow();
+  });
 });

@@ -82,7 +82,7 @@ agent calls tool with args (e.g. read /foo.txt)
 ┌───────────────────────────────────┐
 │  tool.execute.before hook         │
 │  normalizeArgs (drop volatile     │
-│    fields, sort keys, lowercase)  │
+│    fields, sort keys, trim only)  │
 └──────────────┬────────────────────┘
                │
                ▼
@@ -129,7 +129,7 @@ The plugin reads its own behavior from environment variables (all optional):
 
 ### Detection details
 
-**Exact match**: after normalizing args (dropping volatile fields like `timestamp`, `sessionId`, `uuid`, sorting keys, lowercasing strings), a SHA-256 hash is computed. If the same tool produces the same hash `DOOM_LOOP_THRESHOLD` times within the window, a loop is detected. This catches the "read same file 1000x" pattern.
+**Exact match**: after normalizing args (dropping volatile fields like `timestamp`, `sessionId`, `uuid`, sorting keys, preserving original case), a SHA-256 hash is computed. If the same tool produces the same hash `DOOM_LOOP_THRESHOLD` times within the window, a loop is detected. This catches the "read same file 1000x" pattern.
 
 **Fuzzy match**: a 64-bit SimHash is computed over the normalized args. Tokens include object keys, `key=value` pairs for strings, and individual string values. If the same tool produces a SimHash within `DOOM_LOOP_FUZZY_HAMMING` bits of previous calls `DOOM_LOOP_FUZZY_THRESHOLD` times, a loop is detected. This catches near-repetitions where one field (e.g. a cursor offset, a page number) changes slightly. Default `8` is empirically chosen for typical small-arg payloads — with ≤10 tokens in the args, a single-field change can flip 4–10 hash bits because the per-bit accumulator is sparse.
 

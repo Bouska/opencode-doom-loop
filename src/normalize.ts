@@ -55,6 +55,12 @@ export function normalizeArgs(value: unknown): unknown {
     return value.trim();
   }
 
+  if (typeof value === "bigint") {
+    // BigInt is not serializable by JSON.stringify; coerce to string.
+    // This is the most common crash when tool args contain BigInt values.
+    return String(value);
+  }
+
   // number, boolean — pass through
   return value;
 }

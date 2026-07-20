@@ -16,11 +16,14 @@ working in the repo.
 
 ## Source layout
 
-- `src/index.ts` — plugin entry (`DoomLoopGuard`, also exported as `default`).
-  Hooks `tool.execute.before`, parses `DOOM_LOOP_*` env vars, records calls,
-  calls `detector.check()`, formats block messages, fire-and-forget trip log.
+- `src/index.ts` — plugin entry. Exports only `DoomLoopGuard` (named) and
+  `default`, so the OpenCode loader sees exactly one function-valued export.
+- `src/internal.ts` — internal helpers: `loadConfig`, `formatTripMessage`,
+  `appendTripLog`, `createPlugin`, `makeLogger`. Not re-exported from the
+  plugin module, keeping the runtime export surface minimal.
 - `src/normalize.ts` — args canonicalization: drops volatile fields (ts, uuid,
-  sessionId, etc.), sorts object keys, lowercases strings, computes SHA-256.
+  sessionId, etc.), sorts object keys, preserves original case (trimmed),
+  computes SHA-256.
 - `src/detector.ts` — `DoomLoopDetector` class with per-session ring buffers,
   exact-match and fuzzy-match (SimHash + Hamming distance) detection logic.
 - `test/normalize.test.ts`, `test/detector.test.ts` — bun test, plain imports

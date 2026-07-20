@@ -11,7 +11,7 @@ import {
   type TripEvent,
 } from "../src/detector.ts";
 import { canonicalJSON, exactHash, normalizeArgs } from "../src/normalize.ts";
-import { formatTripMessage, appendTripLog, loadConfig } from "../src/index.ts";
+import { formatTripMessage, appendTripLog, loadConfig, createPlugin } from "../src/internal.ts";
 
 // ---------------------------------------------------------------------------
 // Default config
@@ -415,6 +415,186 @@ describe("DoomLoopDetector (consecutive counting)", () => {
     // walking backward: r3 matches (count=1), rDiff does NOT match (break).
     // So count=1 < threshold=2 => no trip.
     expect(trip).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Decoupled streaks (Fix 2 — independent exact/fuzzy counters)
+// ---------------------------------------------------------------------------
+
+describe("DoomLoopDetector (decoupled streaks)", () => {
+  test("A, fuzzy-close-B, A: exact streak is 1, not inflated by fuzzy-only B", () => {
+    const d = new DoomLoopDetector(baseConfig);
+    const rA = makeRecord("read", { filePath: "/a.txt" });
+    const rB = makeRecord("read", { filePath: "/b.txt" }); // different exact
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...rB, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now });
+    // Exact streak = 1 (the trailing A only), so no exact trip
+    const trip = d.check("ses_1", "read", rA.exactHash, rA.fuzzyHash);
+    expect(trip).toBeNull();
+  });
+
+  test("3 identical consecutive still trips exact (decoupled)", () => {
+    const d = new DoomLoopDetector(baseConfig);
+    const r = makeRecord("read", { filePath: "/a.txt" });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...r, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...r, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...r, ts: now });
+    const trip = d.check("ses_1", "read", r.exactHash, r.fuzzyHash);
+    expect(trip).not.toBeNull();
+    expect(trip!.mode).toBe("exact");
+  });
+
+  test("3 near-identical calls (hamming 0-3) still trips fuzzy", () => {
+    const shared = { a: "a", b: "b", c: "c", d: "d", e: "e", f: "f", g: "g", h: "h", i: "i", j: "j", k: "k", l: "l", m: "m", n: "n" };
+    const r1 = makeRecord("read", shared);
+    const r2 = makeRecord("read", { ...shared, n: "O" });
+    const r3 = makeRecord("read", { ...shared, n: "p" });
+    const dist12 = hammingDistance(r1.fuzzyHash, r2.fuzzyHash);
+    const dist23 = hammingDistance(r2.fuzzyHash, r3.fuzzyHash);
+    expect(Math.max(dist12, dist23)).toBeLessThanOrEqual(3);
+    const d = new DoomLoopDetector({ ...baseConfig, fuzzyHamming: Math.max(dist12, dist23), fuzzyThreshold: 3 });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...r1, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...r2, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...r3, ts: now });
+    const trip = d.check("ses_1", "read", r3.exactHash, r3.fuzzyHash);
+    expect(trip).not.toBeNull();
+    expect(trip!.mode).toBe("fuzzy");
+  });
+
+  test("A, A, B, A: exact streak resets at B; only trailing A counts", () => {
+    const d = new DoomLoopDetector(baseConfig);
+    const rA = makeRecord("read", { filePath: "/a.txt" });
+    const rB = makeRecord("read", { filePath: "/zzzzzzzzzzzz" }); // different, not fuzzy-close
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 3000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...rB, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now });
+    const trip = d.check("ses_1", "read", rA.exactHash, rA.fuzzyHash);
+    // Exact streak: walk backward, A(exact=1), B(both reset), A(exact=1)
+    // So exactStreak=1, not 3. No trip.
+    expect(trip).toBeNull();
+
+    // Fuzzy streak: A(fuzzy=1), B(reset since not fuzzy-close), A(fuzzy=1)
+    // So fuzzyStreak=1 too. No trip.
+  });
+
+  test("A, A, fuzzy-B, A: exact streak on final call is 1, not 3", () => {
+    // Use args with many shared fields so the different-exact entry is
+    // still fuzzy-close.
+    const shared = { a: "a", b: "b", c: "c", d: "d", e: "e", f: "f", g: "g", h: "h", i: "i", j: "j", k: "k", l: "l", m: "m", n: "n" };
+    const rA = makeRecord("read", shared);
+    const rB = makeRecord("read", { ...shared, n: "O" }); // exact hash diff, but fuzzy-close
+    const distAB = hammingDistance(rA.fuzzyHash, rB.fuzzyHash);
+    expect(distAB).toBeLessThanOrEqual(3);
+    const d = new DoomLoopDetector({ ...baseConfig, fuzzyHamming: Math.max(distAB, 3) });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 3000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...rB, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now });
+    const trip = d.check("ses_1", "read", rA.exactHash, rA.fuzzyHash);
+    // exactStreak = 1 (the trailing A)
+    // fuzzyStreak: A(fuzzy=1), A(fuzzy=2), rB (fuzzy-close=3), A(fuzzy=4)
+    // fuzzyStreak=4 >= 3 → fuzzy trip
+    expect(trip).not.toBeNull();
+    expect(trip!.mode).toBe("fuzzy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hashing isolation — bad args must not crash the hook
+// ---------------------------------------------------------------------------
+
+describe("createPlugin hashing isolation", () => {
+  test("BigInt args do not crash the hook handler", async () => {
+    const cfg = loadConfig({ DOOM_LOOP_DEBUG: "false" });
+    const d = new DoomLoopDetector({
+      threshold: cfg.threshold,
+      fuzzyThreshold: cfg.fuzzyThreshold,
+      windowMs: cfg.windowMs,
+      fuzzyHamming: cfg.fuzzyHamming,
+      maxBuffer: cfg.maxBuffer,
+    });
+    const logs: string[] = [];
+    const plugin = createPlugin(cfg, d, (level, msg) => { logs.push(`${level}:${msg}`); });
+    const hook = plugin["tool.execute.before"]!;
+
+    // Call with BigInt args — must not throw
+    await expect(
+      hook(
+        { tool: "read", sessionID: "ses_1", callID: "call_1" },
+        { args: { count: 42n } },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  test("circular reference args do not crash the hook handler", async () => {
+    const cfg = loadConfig({ DOOM_LOOP_DEBUG: "true" }); // enable debug to log warning
+    const d = new DoomLoopDetector({
+      threshold: cfg.threshold,
+      fuzzyThreshold: cfg.fuzzyThreshold,
+      windowMs: cfg.windowMs,
+      fuzzyHamming: cfg.fuzzyHamming,
+      maxBuffer: cfg.maxBuffer,
+    });
+    const logs: string[] = [];
+    const plugin = createPlugin(cfg, d, (level, msg) => { logs.push(`${level}:${msg}`); });
+    const hook = plugin["tool.execute.before"]!;
+
+    const circular: Record<string, unknown> = { filePath: "/foo.txt" };
+    circular.self = circular;
+
+    // Must not throw — the hook's try/catch should swallow the error
+    await expect(
+      hook(
+        { tool: "read", sessionID: "ses_1", callID: "call_1" },
+        { args: circular },
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadConfig threshold / maxBuffer clamping
+// ---------------------------------------------------------------------------
+
+describe("loadConfig clamping", () => {
+  test("threshold > maxBuffer is clamped to maxBuffer", () => {
+    const cfg = loadConfig({
+      DOOM_LOOP_THRESHOLD: "100",
+      DOOM_LOOP_MAX_BUFFER: "50",
+      DOOM_LOOP_DEBUG: "false",
+    });
+    expect(cfg.threshold).toBe(50);
+    expect(cfg.maxBuffer).toBe(50);
+  });
+
+  test("fuzzyThreshold > maxBuffer is clamped to maxBuffer", () => {
+    const cfg = loadConfig({
+      DOOM_LOOP_FUZZY_THRESHOLD: "999",
+      DOOM_LOOP_MAX_BUFFER: "10",
+      DOOM_LOOP_DEBUG: "false",
+    });
+    expect(cfg.fuzzyThreshold).toBe(10);
+    expect(cfg.maxBuffer).toBe(10);
+  });
+
+  test("threshold within maxBuffer is unchanged", () => {
+    const cfg = loadConfig({
+      DOOM_LOOP_THRESHOLD: "3",
+      DOOM_LOOP_FUZZY_THRESHOLD: "5",
+      DOOM_LOOP_MAX_BUFFER: "50",
+      DOOM_LOOP_DEBUG: "false",
+    });
+    expect(cfg.threshold).toBe(3);
+    expect(cfg.fuzzyThreshold).toBe(5);
+    expect(cfg.maxBuffer).toBe(50);
   });
 });
 

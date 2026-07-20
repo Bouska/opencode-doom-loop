@@ -206,17 +206,36 @@ export class DoomLoopDetector {
    * Returns null if no loop detected, or a TripEvent if either exact or
    * fuzzy threshold is met.
    *
-   * Walks backward from the newest record and counts *consecutive* matching
-   * calls. A call matches if it has the same tool AND (exact hash matches OR
-   * fuzzy hash is within the configured Hamming distance). The streak breaks
-   * at the first in-window record that does NOT match — interleaved
-   * legitimate calls or different-tool calls do not contribute to the count.
+   * Walks backward through the window and tracks **two independent**
+   * consecutive-run counters:
+   *
+   *   **Exact streak** — increments when `record.exactHash == currentHash`.
+   *   Any differing-hash record sets exact streak to 0 (the walk continues,
+   *   but the exact streak is broken).
+   *
+   *   **Fuzzy streak** — increments when `hammingDistance(...)` ≤ threshold.
+   *   Any record whose fuzzy hash is outside the Hamming bound resets the
+   *   fuzzy streak to 0 (again, the walk continues but the streak resets).
+   *
+   * An exact match is also a fuzzy match (hamming 0 ≤ any threshold ≥ 0).
+   * A fuzzy-only match does NOT contribute to the exact streak (resets it).
+   *
+   * The walk stops (breaks) at the first in-window record whose tool differs
+   * or that matches neither exact nor fuzzy — there is no reason to continue
+   * past a truly irrelevant call.
+   *
+   * Trip order: exact is checked first. If both thresholds are met, exact
+   * wins (consistent with exact being the stronger signal).
+   *
+   * `lastCalls` on the TripEvent contains only the records that contributed
+   * to the winning streak mode (exact matches for exact trips, all fuzzy-
+   * matching records for fuzzy trips).
    */
   check(
     sessionID: string,
     tool: string,
-    exactHash: string,
-    fuzzyHash: bigint,
+    currentExactHash: string,
+    currentFuzzyHash: bigint,
   ): TripEvent | null {
     const buf = this.buffers.get(sessionID);
     if (!buf || buf.length === 0) return null;
@@ -224,41 +243,49 @@ export class DoomLoopDetector {
     const now = this.deps.now?.() ?? Date.now();
     const cutoff = now - this.config.windowMs;
 
-    // Walk backward from the newest record, counting consecutive matches.
-    // A record matches if: same tool AND (exact hash equals OR fuzzy hash
-    // is within the configured Hamming distance).
-    const consecutive: CallRecord[] = [];
+    let exactStreak = 0;
+    let fuzzyStreak = 0;
+    const exactRecords: CallRecord[] = [];
+    const fuzzyRecords: CallRecord[] = [];
+
+    // Walk backward from newest
     for (let i = buf.length - 1; i >= 0; i--) {
       const r = buf[i];
-
-      // Skip entries outside the time window (should not normally happen
-      // since record() evicts them, but be defensive).
       if (r.ts < cutoff) continue;
 
-      const exactMatch = r.exactHash === exactHash;
-      const fuzzyMatch = hammingDistance(r.fuzzyHash, fuzzyHash) <= this.config.fuzzyHamming;
+      const isExact = r.exactHash === currentExactHash;
+      const isFuzzy = hammingDistance(r.fuzzyHash, currentFuzzyHash) <= this.config.fuzzyHamming;
 
-      if (r.tool === tool && (exactMatch || fuzzyMatch)) {
-        consecutive.unshift(r); // prepend to keep chronological order
-      } else {
-        // First non-matching in-window entry breaks the consecutive streak
+      // Different tool or neither exact nor fuzzy → break the walk
+      if (r.tool !== tool || (!isExact && !isFuzzy)) {
         break;
+      }
+
+      if (isExact) {
+        exactStreak++;
+        fuzzyStreak++;
+        exactRecords.unshift(r);
+        fuzzyRecords.unshift(r);
+      } else {
+        // Fuzzy-only: resets exact streak, boosts fuzzy
+        exactStreak = 0;
+        fuzzyStreak++;
+        fuzzyRecords.unshift(r);
       }
     }
 
-    if (consecutive.length === 0) return null;
+    if (exactRecords.length === 0 && fuzzyRecords.length === 0) return null;
 
-    // --- Exact match ---
-    const exactCount = consecutive.filter((r) => r.exactHash === exactHash).length;
-    if (exactCount >= this.config.threshold) {
-      const event = this.buildTripEvent(sessionID, tool, "exact", consecutive.length, consecutive);
+    // --- Exact trip (checked first) ---
+    if (exactStreak >= this.config.threshold) {
+      const event = this.buildTripEvent(sessionID, tool, "exact", exactStreak, exactRecords);
       this.deps.onTrip?.(event);
       return event;
     }
 
-    // --- Fuzzy match ---
-    if (consecutive.length >= this.config.fuzzyThreshold) {
-      const event = this.buildTripEvent(sessionID, tool, "fuzzy", consecutive.length, consecutive);
+    // --- Fuzzy trip ---
+    if (fuzzyStreak >= this.config.fuzzyThreshold) {
+      const event = this.buildTripEvent(sessionID, tool, "fuzzy", fuzzyStreak, fuzzyRecords);
       this.deps.onTrip?.(event);
       return event;
     }
