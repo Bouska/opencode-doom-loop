@@ -36,7 +36,7 @@ export interface DetectorConfig {
   fuzzyThreshold: number;
   /** Time window in ms (default 60000). */
   windowMs: number;
-  /** Max Hamming distance for fuzzy match (default 3). */
+  /** Max Hamming distance for fuzzy match (default 8, max 16). */
   fuzzyHamming: number;
   /** Per-session ring buffer size cap (default 50). */
   maxBuffer: number;
@@ -205,6 +205,12 @@ export class DoomLoopDetector {
    * Check whether the current call triggers a trip.
    * Returns null if no loop detected, or a TripEvent if either exact or
    * fuzzy threshold is met.
+   *
+   * Walks backward from the newest record and counts *consecutive* matching
+   * calls. A call matches if it has the same tool AND (exact hash matches OR
+   * fuzzy hash is within the configured Hamming distance). The streak breaks
+   * at the first in-window record that does NOT match — interleaved
+   * legitimate calls or different-tool calls do not contribute to the count.
    */
   check(
     sessionID: string,
@@ -218,30 +224,41 @@ export class DoomLoopDetector {
     const now = this.deps.now?.() ?? Date.now();
     const cutoff = now - this.config.windowMs;
 
-    // Filter to entries within the window and for the same tool
-    const sameTool = buf.filter(
-      (r) => r.tool === tool && r.ts >= cutoff,
-    );
+    // Walk backward from the newest record, counting consecutive matches.
+    // A record matches if: same tool AND (exact hash equals OR fuzzy hash
+    // is within the configured Hamming distance).
+    const consecutive: CallRecord[] = [];
+    for (let i = buf.length - 1; i >= 0; i--) {
+      const r = buf[i];
 
-    if (sameTool.length === 0) return null;
+      // Skip entries outside the time window (should not normally happen
+      // since record() evicts them, but be defensive).
+      if (r.ts < cutoff) continue;
+
+      const exactMatch = r.exactHash === exactHash;
+      const fuzzyMatch = hammingDistance(r.fuzzyHash, fuzzyHash) <= this.config.fuzzyHamming;
+
+      if (r.tool === tool && (exactMatch || fuzzyMatch)) {
+        consecutive.unshift(r); // prepend to keep chronological order
+      } else {
+        // First non-matching in-window entry breaks the consecutive streak
+        break;
+      }
+    }
+
+    if (consecutive.length === 0) return null;
 
     // --- Exact match ---
-    const exactCount = sameTool.filter(
-      (r) => r.exactHash === exactHash,
-    ).length;
+    const exactCount = consecutive.filter((r) => r.exactHash === exactHash).length;
     if (exactCount >= this.config.threshold) {
-      const event = this.buildTripEvent(sessionID, tool, "exact", exactCount, sameTool);
+      const event = this.buildTripEvent(sessionID, tool, "exact", consecutive.length, consecutive);
       this.deps.onTrip?.(event);
       return event;
     }
 
     // --- Fuzzy match ---
-    const fuzzyCount = sameTool.filter(
-      (r) => r.fuzzyHash === fuzzyHash ||
-        hammingDistance(r.fuzzyHash, fuzzyHash) <= this.config.fuzzyHamming,
-    ).length;
-    if (fuzzyCount >= this.config.fuzzyThreshold) {
-      const event = this.buildTripEvent(sessionID, tool, "fuzzy", fuzzyCount, sameTool);
+    if (consecutive.length >= this.config.fuzzyThreshold) {
+      const event = this.buildTripEvent(sessionID, tool, "fuzzy", consecutive.length, consecutive);
       this.deps.onTrip?.(event);
       return event;
     }

@@ -346,6 +346,79 @@ describe("appendTripLog", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Consecutive-run counting (Fix 3 — regression tests)
+// ---------------------------------------------------------------------------
+
+describe("DoomLoopDetector (consecutive counting)", () => {
+  test("3 identical consecutive calls still trip (exact)", () => {
+    const d = new DoomLoopDetector(baseConfig);
+    const r = makeRecord("read", { filePath: "/a.txt" });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...r, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...r, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...r, ts: now });
+    const trip = d.check("ses_1", "read", r.exactHash, r.fuzzyHash);
+    expect(trip).not.toBeNull();
+    expect(trip!.mode).toBe("exact");
+  });
+
+  test("interleaved read /a, read /b, read /a, read /b, read /a does NOT trip", () => {
+    // With consecutive-only counting, the streak should be broken by the
+    // interleaving different-hash calls.
+    const d = new DoomLoopDetector(baseConfig);
+    const rA = makeRecord("read", { filePath: "/a.txt" });
+    const rB = makeRecord("read", { filePath: "/b.txt" });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 4000 });
+    d.record("ses_1", { tool: "read", ...rB, ts: now - 3000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...rB, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now });
+    const trip = d.check("ses_1", "read", rA.exactHash, rA.fuzzyHash);
+    expect(trip).toBeNull();
+  });
+
+  test("read /a, read /a, bash ls, read /a does NOT trip (different tool breaks streak)", () => {
+    const d = new DoomLoopDetector(baseConfig);
+    const rA = makeRecord("read", { filePath: "/a.txt" });
+    const rBash = makeRecord("bash", { command: "ls" });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 3000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now - 2000 });
+    d.record("ses_1", { tool: "bash", ...rBash, ts: now - 1000 });
+    d.record("ses_1", { tool: "read", ...rA, ts: now });
+    const trip = d.check("ses_1", "read", rA.exactHash, rA.fuzzyHash);
+    expect(trip).toBeNull();
+  });
+
+  test("1 differing call in the middle breaks fuzzy streak too", () => {
+    // Set fuzzyThreshold=2, make two close calls then a third that is
+    // sufficiently different (but same tool). The third different call
+    // should break the streak so the fourth close call does NOT trip.
+    const d = new DoomLoopDetector({ ...baseConfig, fuzzyThreshold: 2 });
+    const shared = { a: "a", b: "b", c: "c", d: "d", e: "e" };
+    const r1 = makeRecord("read", shared);
+    // r2 is close to r1
+    const r2 = makeRecord("read", { ...shared, e: "E" });
+    // rDifferent is completely different args
+    const rDiff = makeRecord("read", { z: "zzzzzzzzzz" });
+    // r3 is close to r1 again
+    const r3 = makeRecord("read", { ...shared, e: "f" });
+    const now = Date.now();
+    d.record("ses_1", { tool: "read", ...r1, ts: now - 3000 });
+    d.record("ses_1", { tool: "read", ...r2, ts: now - 2000 });
+    d.record("ses_1", { tool: "read", ...rDiff, ts: now - 1000 }); // breaks streak
+    d.record("ses_1", { tool: "read", ...r3, ts: now });
+    const trip = d.check("ses_1", "read", r3.exactHash, r3.fuzzyHash);
+    // Only entries [rDiff, r3] are consecutive (r3 matches itself, rDiff
+    // does not match — it has different args). Actually r3 at the end:
+    // walking backward: r3 matches (count=1), rDiff does NOT match (break).
+    // So count=1 < threshold=2 => no trip.
+    expect(trip).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Window expiry test (explicit time mocking)
 // ---------------------------------------------------------------------------
 

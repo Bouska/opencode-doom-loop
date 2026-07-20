@@ -7,8 +7,8 @@
  *
  * Two strategies:
  *   1. `normalizeArgs` — recursively walk an args object, drop volatile
- *      fields, sort keys alphabetically, lowercase strings.
- *   2. `canonicalJSON` — JSON.stringify the normalized form with sorted keys.
+ *      fields, sort keys alphabetically.
+ *   2. `canonicalJSON` — JSON.stringify the normalized form.
  *   3. `exactHash` — SHA-256 of the canonical JSON (fast, deterministic).
  */
 
@@ -30,7 +30,7 @@ const VOLATILE_RE =
  *  - Object: drop volatile-keyed fields, sort remaining keys alphabetically,
  *    recurse into each value.
  *  - Array: recurse into each element.
- *  - String: lowercase and trim.
+ *  - String: trim only. Original case is preserved for exact-hash purposes.
  *  - number, boolean, null: pass through.
  *  - undefined: pass through (some tools have no args).
  */
@@ -52,7 +52,7 @@ export function normalizeArgs(value: unknown): unknown {
   }
 
   if (typeof value === "string") {
-    return value.toLowerCase().trim();
+    return value.trim();
   }
 
   // number, boolean — pass through
@@ -65,11 +65,12 @@ export function normalizeArgs(value: unknown): unknown {
 
 /**
  * Serialize the normalized args to a canonical JSON string.
- * Keys are already sorted by `normalizeArgs`; this extra sort is a safety net
- * for any edge case where the object passes through without normalization.
+ * Keys are already sorted by `normalizeArgs`, so plain `JSON.stringify`
+ * produces deterministic output. A replacer array is NOT used because it
+ * would act as a recursive key whitelist and collapse nested objects.
  */
 export function canonicalJSON(value: unknown): string {
-  return JSON.stringify(normalizeArgs(value), Object.keys(value as object).sort());
+  return JSON.stringify(normalizeArgs(value));
 }
 
 // ---------------------------------------------------------------------------

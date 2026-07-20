@@ -49,14 +49,15 @@ name: `bun test -t "3 identical calls"`.
 3. `mv dist/index.d.ts dist/opencode-doom-loop.d.ts` — the published
    type entry is renamed because the runtime entry is renamed next.
 4. `bun build src/index.ts --outdir=dist --entry-naming=opencode-doom-loop.js --target=node --format=esm --sourcemap=linked`
-5. `rm dist/normalize.d.ts dist/detector.d.ts` — these support modules are
-   inlined into the single bundle; the stray `.d.ts` files would be shipped.
+5. The support modules `normalize.d.ts` and `detector.d.ts` are kept so the
+   renamed entrypoint can resolve its imports. They are listed in
+   `package.json` `files` and shipped with the package.
 
 Output: a single ESM file `dist/opencode-doom-loop.js` (with a linked
-sourcemap `dist/opencode-doom-loop.js.map`) + one `.d.ts`. The plugin
-loaders look for the `.js` filename; renaming breaks Option A/B installs.
-All source modules are inlined — do not add a second entrypoint unless you
-also update the load path.
+sourcemap `dist/opencode-doom-loop.js.map`) + three `.d.ts` files. The
+plugin loaders look for the `.js` filename; renaming breaks Option A/B
+installs. All source modules are inlined into the `.js` bundle — do not
+add a second entrypoint unless you also update the load path.
 
 ## Config is environment-driven at runtime
 
@@ -72,7 +73,7 @@ Full list:
 | `DOOM_LOOP_THRESHOLD` | `3` | Exact-match consecutive threshold |
 | `DOOM_LOOP_FUZZY_THRESHOLD` | `3` | Fuzzy-match consecutive threshold |
 | `DOOM_LOOP_WINDOW_MS` | `60000` | Time window in ms |
-| `DOOM_LOOP_FUZZY_HAMMING` | `3` | Max Hamming distance for fuzzy (max 10) |
+| `DOOM_LOOP_FUZZY_HAMMING` | `8` | Max Hamming distance for fuzzy (max 16) |
 | `DOOM_LOOP_MAX_BUFFER` | `50` | Per-session ring buffer cap |
 | `DOOM_LOOP_EXCLUDE_TOOLS` | `list,todowrite` | Never-checked tools |
 | `DOOM_LOOP_INCLUDE_TOOLS` | _(empty)_ | Only-checked tools |

@@ -142,7 +142,7 @@ There is no per-session config API in v1. To disable the plugin for a specific s
 This is a fail-closed guard. False positives are possible — for example, legitimate batch processing over similar files. If the plugin blocks a valid workflow:
 
 1. Raise the threshold: `DOOM_LOOP_THRESHOLD=5` or `DOOM_LOOP_FUZZY_THRESHOLD=5`
-2. Widen the fuzzy Hamming tolerance: `DOOM_LOOP_FUZZY_HAMMING=1` (stricter)
+2. Tighten the fuzzy Hamming distance (lower = stricter): `DOOM_LOOP_FUZZY_HAMMING=1`
 3. Add the tool to `DOOM_LOOP_EXCLUDE_TOOLS`
 4. Disable the plugin: `DOOM_LOOP_ENABLED=false`
 

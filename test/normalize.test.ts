@@ -32,7 +32,8 @@ describe("normalizeArgs", () => {
       someTimestamp: 12345,
     }) as Record<string, unknown>;
     const query = result.query as Record<string, unknown>;
-    expect(query.sql).toBe("select 1");
+    // Case is preserved (no longer lowercased)
+    expect(query.sql).toBe("SELECT 1");
     expect(query.sessionId).toBeUndefined();
     expect(query.callId).toBeUndefined();
     expect(query.receivedAt).toBeUndefined();
@@ -90,13 +91,13 @@ describe("normalizeArgs", () => {
     expect(Object.keys(c)).toEqual(["x", "y"]);
   });
 
-  test("lowercases string values", () => {
+  test("preserves original case in string values (trim only)", () => {
     const result = normalizeArgs({
       name: "HELLO WORLD",
       path: "/My/Path/  ",
     }) as Record<string, string>;
-    expect(result.name).toBe("hello world");
-    expect(result.path).toBe("/my/path/");
+    expect(result.name).toBe("HELLO WORLD");
+    expect(result.path).toBe("/My/Path/");
   });
 
   test("preserves numbers, booleans, null", () => {
@@ -133,7 +134,8 @@ describe("normalizeArgs", () => {
 
     const meta = result.meta as Record<string, unknown>;
     expect(meta.ts).toBeUndefined();
-    expect(meta.tags).toEqual(["c", "b", "a"]);
+    // Case is preserved (no longer lowercased)
+    expect(meta.tags).toEqual(["C", "b", "A"]);
   });
 
   test("returns null/undefined as-is", () => {
@@ -153,6 +155,21 @@ describe("normalizeArgs", () => {
 // ---------------------------------------------------------------------------
 
 describe("canonicalJSON", () => {
+  test("different nested keys produce different canonical JSON", () => {
+    // Two objects with same top-level keys but different nested keys must
+    // produce different canonical JSON (regression: replacer array in
+    // JSON.stringify collapses nested objects).
+    const a = canonicalJSON({ filePath: "x", opts: { foo: 1, bar: 2 } });
+    const b = canonicalJSON({ filePath: "x", opts: { foo: 1, baz: 2 } });
+    expect(a).not.toBe(b);
+  });
+
+  test("different nested keys produce different SHA-256 hashes", () => {
+    const a = exactHash({ filePath: "x", opts: { foo: 1, bar: 2 } });
+    const b = exactHash({ filePath: "x", opts: { foo: 1, baz: 2 } });
+    expect(a).not.toBe(b);
+  });
+
   test("produces identical strings for equivalent-but-key-reordered args", () => {
     const a = canonicalJSON({ b: 2, a: 1, c: { z: 26, y: 25 } });
     const b = canonicalJSON({ c: { y: 25, z: 26 }, a: 1, b: 2 });
@@ -204,5 +221,19 @@ describe("exactHash", () => {
   test("produces a hex string of length 64 (SHA-256)", () => {
     const hash = exactHash({ a: 1 });
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("/foo/Bar.txt and /foo/bar.txt produce different hashes (case preservation)", () => {
+    const a = exactHash({ filePath: "/foo/Bar.txt" });
+    const b = exactHash({ filePath: "/foo/bar.txt" });
+    expect(a).not.toBe(b);
+  });
+
+  test("volatile-field strip still works when case is preserved", () => {
+    // UUID/timestamp change should NOT affect the hash even though
+    // case is no longer folded.
+    const a = exactHash({ filePath: "/foo.txt", timestamp: "abc-123" });
+    const b = exactHash({ filePath: "/foo.txt", timestamp: "xyz-789" });
+    expect(a).toBe(b);
   });
 });
