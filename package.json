@@ -1,0 +1,52 @@
+{
+  "name": "opencode-doom-loop",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that blocks tool-call doom loops in agents and subagents via per-session exact and fuzzy hashing.",
+  "type": "module",
+  "main": "dist/opencode-doom-loop.js",
+  "types": "dist/opencode-doom-loop.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/opencode-doom-loop.d.ts",
+      "import": "./dist/opencode-doom-loop.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "bun run clean && tsc --emitDeclarationOnly --outDir dist && mv dist/index.d.ts dist/opencode-doom-loop.d.ts && bun build src/index.ts --outdir=dist --entry-naming=opencode-doom-loop.js --target=node --format=esm --sourcemap=linked && rm dist/normalize.d.ts dist/detector.d.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "opencode",
+    "doom-loop",
+    "loop-guard",
+    "plugin",
+    "ai-coding",
+    "safety",
+    "guard",
+    "agent",
+    "subagent"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pablomg/opencode-doom-loop.git"
+  },
+  "bugs": "https://github.com/pablomg/opencode-doom-loop/issues",
+  "homepage": "https://github.com/pablomg/opencode-doom-loop#readme",
+  "engines": {
+    "opencode": ">=1.17.0",
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "bun-types": "^1.3.0",
+    "typescript": "^5.7.0"
+  }
+}
